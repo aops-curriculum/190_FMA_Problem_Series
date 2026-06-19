@@ -3,18 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <title>Rotating Ring</title>
-  <!-- Original AoPS interactive. Faithful 2D replacement for the GlowScript
-       "rotatingring" program: an earth-textured ring spinning about its axis (z),
-       with a red dot on the rim and a red tangential velocity arrow. Demonstrates
-       that the velocity vector is always perpendicular to the radius. -->
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { background: #fff; font-family: 'Segoe UI', system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
+    html, body { background: #fff; }
     canvas { display: block; }
   </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+<!-- Auto-resize boilerplate v2.4 -->
 <script>
 (function() {
   var BUFFER = 4, H_SCROLLBAR = 18, measuring = false;
@@ -44,159 +40,142 @@
   if (window.ResizeObserver && document.body) new ResizeObserver(report).observe(document.body);
 })();
 </script>
-<script>
-(() => {
-  'use strict';
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
-  // dt=0.03 rad/frame at rate=100 → angular speed ≈ 3 rad/s
-  const OMEGA  = 3.0;  // rad/s (matches dt=0.03 × rate=100)
-  const RING_R = 1.0;  // ring radius in scene units
-  const THICK  = 0.08; // ring cross-section radius
-  const ARROW_LEN = 0.7; // velocity arrow length in scene units
-  const MAXW   = 360;
+const MAXW = 500;
+let W = Math.min(window.innerWidth || MAXW, MAXW);
+let H = W; // square canvas, matching GlowScript's square window
 
-  const canvas = document.getElementById('c');
-  const ctx    = canvas.getContext('2d');
+// ── Scene ──────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xffffff);
 
-  let W, H, scale, cx, cy, dpr;
-  let phi = 0; // current rotation angle
-  let lastTime = 0;
+// ── Camera ─────────────────────────────────────────────────────────────────
+// View from slightly in front and above the ring plane so it reads as 3D.
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+camera.position.set(0, -4.0, 2.5);
+camera.lookAt(0, 0, 0);
 
-  function layout() {
-    W     = Math.min(window.innerWidth || MAXW, MAXW);
-    H     = W;
-    scale = W / 3.0; // ±1.5 units visible
-    cx    = W / 2;
-    cy    = H / 2;
-    dpr   = window.devicePixelRatio || 1;
-    canvas.width  = Math.round(W * dpr);
-    canvas.height = Math.round(H * dpr);
-    canvas.style.width  = W + 'px';
-    canvas.style.height = H + 'px';
-    document.body.style.width  = W + 'px';
-    document.body.style.height = H + 'px';
-  }
+// ── Renderer ───────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+document.body.appendChild(renderer.domElement);
+document.body.style.width = W + 'px';
 
-  function gx(x) { return cx + x * scale; }
-  function gy(y) { return cy - y * scale; }
+// ── Lighting ───────────────────────────────────────────────────────────────
+// GlowScript: scene.lights = []; scene.ambient = color.white
+// MeshBasicMaterial matches this exactly (no lighting computation at all).
+scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-  function drawArrow(x1, y1, x2, y2, color) {
-    const px1 = gx(x1), py1 = gy(y1);
-    const px2 = gx(x2), py2 = gy(y2);
-    const dx  = px2 - px1, dy = py2 - py1;
-    const len = Math.hypot(dx, dy);
-    if (len < 0.001) return;
-    const ux   = dx / len, uy = dy / len;
-    const head = Math.max(6, scale * 0.12);
-    const ang  = 0.42;
+// ── Earth-textured ring ────────────────────────────────────────────────────
+// GlowScript: ring(radius=1, thickness=0.08, axis=(0,0,1), texture=textures.earth)
+// TorusGeometry(radius, tube, radialSegments, tubularSegments) lies in xy-plane.
+const ringGeo = new THREE.TorusGeometry(1, 0.08, 32, 128);
+const ringMat = new THREE.MeshBasicMaterial({ color: 0x2255bb }); // placeholder until texture
+const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+scene.add(ringMesh);
 
-    ctx.strokeStyle = color;
-    ctx.fillStyle   = color;
-    ctx.lineWidth   = Math.max(1.5, scale * 0.022);
+// Load earth texture — GlowScript's own URL first, NASA Blue Marble as fallback.
+const loader = new THREE.TextureLoader();
+function applyTex(tex) {
+  ringMat.map = tex;
+  ringMat.color.set(0xffffff);
+  ringMat.needsUpdate = true;
+}
+loader.load(
+  'https://web.glowscript.org/textures/earth_large.jpg',
+  applyTex,
+  undefined,
+  () => loader.load(
+    'https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Land_ocean_ice_cloud_hires.jpg/2048px-Land_ocean_ice_cloud_hires.jpg',
+    applyTex
+  )
+);
 
-    ctx.beginPath();
-    ctx.moveTo(px1, py1);
-    ctx.lineTo(px2, py2);
-    ctx.stroke();
+// ── Semi-transparent red plane ─────────────────────────────────────────────
+// GlowScript: box(3×3×0.01, color=red, opacity=0.2) — visually a flat plane
+const planeMat = new THREE.MeshBasicMaterial({
+  color: 0xff0000, transparent: true, opacity: 0.2,
+  side: THREE.DoubleSide, depthWrite: false,
+});
+scene.add(new THREE.Mesh(new THREE.PlaneGeometry(3, 3), planeMat));
 
-    ctx.beginPath();
-    ctx.moveTo(px2, py2);
-    ctx.lineTo(px2 - head * (ux * Math.cos(ang)  - uy * Math.sin(ang)),
-               py2 - head * (uy * Math.cos(ang)  + ux * Math.sin(ang)));
-    ctx.lineTo(px2 - head * (ux * Math.cos(-ang) - uy * Math.sin(-ang)),
-               py2 - head * (uy * Math.cos(-ang) + ux * Math.sin(-ang)));
-    ctx.closePath();
-    ctx.fill();
-  }
+// ── Z-axis cylinder ────────────────────────────────────────────────────────
+// GlowScript: cylinder(pos=(0,0,-1), axis=(0,0,2), radius=0.02, color=black)
+const axisMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const axisMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 2, 12), axisMat);
+axisMesh.rotation.x = Math.PI / 2; // CylinderGeometry is along Y → rotate to Z
+scene.add(axisMesh);
 
-  function draw() {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
+// ── Red dot ────────────────────────────────────────────────────────────────
+// GlowScript: sphere(pos=(1,0,0), radius=0.1, color=red)
+const dotMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+const dotMesh = new THREE.Mesh(new THREE.SphereGeometry(0.1, 24, 24), dotMat);
+scene.add(dotMesh);
 
-    // Transparent red background square (the mybox from original)
-    const boxHalf = 1.5 * scale;
-    ctx.fillStyle = 'rgba(220,50,50,0.08)';
-    ctx.fillRect(cx - boxHalf, cy - boxHalf, 2 * boxHalf, 2 * boxHalf);
+// ── Velocity arrow ─────────────────────────────────────────────────────────
+// GlowScript: arrow(pos=(1,0,0.1), axis=(0,1,0), color=red, shaftwidth=0.03)
+// Total length = |axis| = 1. Head ≈ 25% of length, width matches shaftwidth scale.
+const arrowHelper = new THREE.ArrowHelper(
+  new THREE.Vector3(0, 1, 0),    // initial direction (+y = tangential at phi=0)
+  new THREE.Vector3(1, 0, 0.1),  // tail (slightly above the ring plane)
+  1.0,                            // length
+  0xff0000,                       // color
+  0.25,                           // headLength
+  0.08                            // headWidth
+);
+scene.add(arrowHelper);
 
-    // Z-axis (black vertical line through center)
-    ctx.beginPath();
-    ctx.moveTo(gx(0), gy(-1.4));
-    ctx.lineTo(gx(0), gy(1.4));
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth   = Math.max(1.5, scale * 0.018);
-    ctx.stroke();
+// ── OrbitControls (= GlowScript userspin + zoom) ──────────────────────────
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.set(0, 0, 0);
 
-    // Ring (thick circle = donut). Draw as a series of colored arcs to simulate
-    // the earth texture rotating. Two bands: blue-green (water) and green (land).
-    const outerR = (RING_R + THICK) * scale;
-    const innerR = (RING_R - THICK) * scale;
-    const SEGS   = 60;
+// ── Animation ──────────────────────────────────────────────────────────────
+// GlowScript: while True: rate(100); r.rotate(angle=dt=0.03, axis=(0,0,1))
+// → angular velocity ω = dt × rate = 0.03 × 100 = 3 rad/s
+const OMEGA = 3.0;
+let phi = 0;
+let lastT = null;
+const _dir = new THREE.Vector3();
 
-    // Outer and inner donut drawn as polygon fill
-    ctx.beginPath();
-    for (let i = 0; i <= SEGS; i++) {
-      const a = (i / SEGS) * 2 * Math.PI;
-      const px = gx(RING_R * Math.cos(a));
-      const py = gy(RING_R * Math.sin(a));
-      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-    }
-    ctx.strokeStyle = '#2563eb';
-    ctx.lineWidth   = THICK * 2 * scale;
-    ctx.stroke();
+function animate(t) {
+  requestAnimationFrame(animate);
+  if (lastT === null) lastT = t;
+  const dt = Math.min((t - lastT) / 1000, 0.05); // cap at 50 ms for hidden-tab safety
+  lastT = t;
 
-    // Draw rotating "land" stripe on the ring (shows rotation)
-    // Two arcs 180° apart, each spanning ~1 radian; canvas angle = -(GS angle)
-    const stripeW = THICK * 2.2 * scale;
-    for (let k = 0; k < 2; k++) {
-      const ca = -(phi + k * Math.PI); // center of stripe in canvas angle coords
-      ctx.beginPath();
-      ctx.arc(cx, cy, RING_R * scale, ca - 0.5, ca + 0.5, false);
-      ctx.strokeStyle = '#16a34a';
-      ctx.lineWidth   = stripeW;
-      ctx.stroke();
-    }
+  phi += OMEGA * dt;
+  const cx = Math.cos(phi), cy = Math.sin(phi);
 
-    // Draw ring outline
-    ctx.beginPath();
-    ctx.arc(cx, cy, (RING_R + THICK) * scale, 0, 2 * Math.PI);
-    ctx.strokeStyle = '#1e3a8a';
-    ctx.lineWidth   = 1;
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(cx, cy, (RING_R - THICK) * scale, 0, 2 * Math.PI);
-    ctx.strokeStyle = '#1e3a8a';
-    ctx.lineWidth   = 1;
-    ctx.stroke();
+  ringMesh.rotation.z = phi;        // spin the earth texture with the ring
 
-    // Red dot on ring (at angle phi from x-axis)
-    const dotX = RING_R * Math.cos(phi);
-    const dotY = RING_R * Math.sin(phi);
-    const dotR = Math.max(4, scale * 0.1);
-    ctx.beginPath();
-    ctx.arc(gx(dotX), gy(dotY), dotR, 0, 2 * Math.PI);
-    ctx.fillStyle = '#dc2626';
-    ctx.fill();
+  dotMesh.position.set(cx, cy, 0);  // dot on ring circumference
 
-    // Tangential velocity arrow (perpendicular to radius, in direction of rotation)
-    const vx = -Math.sin(phi) * ARROW_LEN;
-    const vy =  Math.cos(phi) * ARROW_LEN;
-    drawArrow(dotX, dotY, dotX + vx, dotY + vy, '#dc2626');
-  }
+  // Arrow tail at dot position (slightly above ring plane); direction tangential
+  arrowHelper.position.set(cx, cy, 0.1);
+  _dir.set(-cy, cx, 0);             // (-sin φ, cos φ, 0) is already unit length
+  arrowHelper.setDirection(_dir);
 
-  function loop(now) {
-    requestAnimationFrame(loop);
-    if (!lastTime) lastTime = now;
-    const dt = Math.min((now - lastTime) / 1000, 0.05);
-    lastTime  = now;
-    phi      += OMEGA * dt;
-    draw();
-  }
+  controls.update();
+  renderer.render(scene, camera);
+}
 
-  window.addEventListener('resize', () => { layout(); draw(); });
+requestAnimationFrame(animate);
 
-  layout();
-  requestAnimationFrame(loop);
-})();
+// ── Responsive resize ──────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  W = Math.min(window.innerWidth || MAXW, MAXW);
+  H = W;
+  renderer.setSize(W, H);
+  camera.aspect = 1;
+  camera.updateProjectionMatrix();
+  document.body.style.width = W + 'px';
+});
 </script>
 </body>
 </html>
