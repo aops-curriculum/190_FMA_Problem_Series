@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Rotating Ring</title>
+  <!-- Original AoPS interactive. Faithful 2D replacement for the GlowScript
+       "rotatingring" program: an earth-textured ring spinning about its axis (z),
+       with a red dot on the rim and a red tangential velocity arrow. Demonstrates
+       that the velocity vector is always perpendicular to the radius. -->
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #fff; font-family: 'Segoe UI', system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function() {
+  var BUFFER = 4, H_SCROLLBAR = 18, measuring = false;
+  function measure() {
+    if (measuring) return 0;
+    var b = document.body, h = document.documentElement;
+    if (!b) return 0;
+    measuring = true;
+    var hOld = b.style.height, hPri = b.style.getPropertyPriority('height');
+    var mOld = b.style.minHeight, mPri = b.style.getPropertyPriority('min-height');
+    b.style.setProperty('height', 'auto', 'important');
+    b.style.setProperty('min-height', '0', 'important');
+    var content = b.scrollHeight || 0;
+    if (hOld) b.style.setProperty('height', hOld, hPri); else b.style.removeProperty('height');
+    if (mOld) b.style.setProperty('min-height', mOld, mPri); else b.style.removeProperty('min-height');
+    measuring = false;
+    var hOverflow = h && (h.scrollWidth - h.clientWidth) >= 4;
+    return Math.ceil(content) + BUFFER + (hOverflow ? H_SCROLLBAR : 0);
+  }
+  var last = 0;
+  function report() {
+    var hgt = measure();
+    if (hgt > 0 && Math.abs(hgt - last) >= 2) { last = hgt; window.parent.postMessage({ type: 'resize', height: hgt }, '*'); }
+  }
+  window.addEventListener('load', report);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(report);
+  if (window.ResizeObserver && document.body) new ResizeObserver(report).observe(document.body);
+})();
+</script>
+<script>
+(() => {
+  'use strict';
+
+  // dt=0.03 rad/frame at rate=100 → angular speed ≈ 3 rad/s
+  const OMEGA  = 3.0;  // rad/s (matches dt=0.03 × rate=100)
+  const RING_R = 1.0;  // ring radius in scene units
+  const THICK  = 0.08; // ring cross-section radius
+  const ARROW_LEN = 0.7; // velocity arrow length in scene units
+  const MAXW   = 360;
+
+  const canvas = document.getElementById('c');
+  const ctx    = canvas.getContext('2d');
+
+  let W, H, scale, cx, cy, dpr;
+  let phi = 0; // current rotation angle
+  let lastTime = 0;
+
+  function layout() {
+    W     = Math.min(window.innerWidth || MAXW, MAXW);
+    H     = W;
+    scale = W / 3.0; // ±1.5 units visible
+    cx    = W / 2;
+    cy    = H / 2;
+    dpr   = window.devicePixelRatio || 1;
+    canvas.width  = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    document.body.style.width  = W + 'px';
+    document.body.style.height = H + 'px';
+  }
+
+  function gx(x) { return cx + x * scale; }
+  function gy(y) { return cy - y * scale; }
+
+  function drawArrow(x1, y1, x2, y2, color) {
+    const px1 = gx(x1), py1 = gy(y1);
+    const px2 = gx(x2), py2 = gy(y2);
+    const dx  = px2 - px1, dy = py2 - py1;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.001) return;
+    const ux   = dx / len, uy = dy / len;
+    const head = Math.max(6, scale * 0.12);
+    const ang  = 0.42;
+
+    ctx.strokeStyle = color;
+    ctx.fillStyle   = color;
+    ctx.lineWidth   = Math.max(1.5, scale * 0.022);
+
+    ctx.beginPath();
+    ctx.moveTo(px1, py1);
+    ctx.lineTo(px2, py2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(px2, py2);
+    ctx.lineTo(px2 - head * (ux * Math.cos(ang)  - uy * Math.sin(ang)),
+               py2 - head * (uy * Math.cos(ang)  + ux * Math.sin(ang)));
+    ctx.lineTo(px2 - head * (ux * Math.cos(-ang) - uy * Math.sin(-ang)),
+               py2 - head * (uy * Math.cos(-ang) + ux * Math.sin(-ang)));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function draw() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    // Transparent red background square (the mybox from original)
+    const boxHalf = 1.5 * scale;
+    ctx.fillStyle = 'rgba(220,50,50,0.08)';
+    ctx.fillRect(cx - boxHalf, cy - boxHalf, 2 * boxHalf, 2 * boxHalf);
+
+    // Z-axis (black vertical line through center)
+    ctx.beginPath();
+    ctx.moveTo(gx(0), gy(-1.4));
+    ctx.lineTo(gx(0), gy(1.4));
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth   = Math.max(1.5, scale * 0.018);
+    ctx.stroke();
+
+    // Ring (thick circle = donut). Draw as a series of colored arcs to simulate
+    // the earth texture rotating. Two bands: blue-green (water) and green (land).
+    const outerR = (RING_R + THICK) * scale;
+    const innerR = (RING_R - THICK) * scale;
+    const SEGS   = 60;
+
+    // Outer and inner donut drawn as polygon fill
+    ctx.beginPath();
+    for (let i = 0; i <= SEGS; i++) {
+      const a = (i / SEGS) * 2 * Math.PI;
+      const px = gx(RING_R * Math.cos(a));
+      const py = gy(RING_R * Math.sin(a));
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth   = THICK * 2 * scale;
+    ctx.stroke();
+
+    // Draw rotating "land" stripe on the ring (shows rotation)
+    // Two arcs 180° apart, each spanning ~1 radian; canvas angle = -(GS angle)
+    const stripeW = THICK * 2.2 * scale;
+    for (let k = 0; k < 2; k++) {
+      const ca = -(phi + k * Math.PI); // center of stripe in canvas angle coords
+      ctx.beginPath();
+      ctx.arc(cx, cy, RING_R * scale, ca - 0.5, ca + 0.5, false);
+      ctx.strokeStyle = '#16a34a';
+      ctx.lineWidth   = stripeW;
+      ctx.stroke();
+    }
+
+    // Draw ring outline
+    ctx.beginPath();
+    ctx.arc(cx, cy, (RING_R + THICK) * scale, 0, 2 * Math.PI);
+    ctx.strokeStyle = '#1e3a8a';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, (RING_R - THICK) * scale, 0, 2 * Math.PI);
+    ctx.strokeStyle = '#1e3a8a';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+
+    // Red dot on ring (at angle phi from x-axis)
+    const dotX = RING_R * Math.cos(phi);
+    const dotY = RING_R * Math.sin(phi);
+    const dotR = Math.max(4, scale * 0.1);
+    ctx.beginPath();
+    ctx.arc(gx(dotX), gy(dotY), dotR, 0, 2 * Math.PI);
+    ctx.fillStyle = '#dc2626';
+    ctx.fill();
+
+    // Tangential velocity arrow (perpendicular to radius, in direction of rotation)
+    const vx = -Math.sin(phi) * ARROW_LEN;
+    const vy =  Math.cos(phi) * ARROW_LEN;
+    drawArrow(dotX, dotY, dotX + vx, dotY + vy, '#dc2626');
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    if (!lastTime) lastTime = now;
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime  = now;
+    phi      += OMEGA * dt;
+    draw();
+  }
+
+  window.addEventListener('resize', () => { layout(); draw(); });
+
+  layout();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
