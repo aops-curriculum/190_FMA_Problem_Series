@@ -61,9 +61,11 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xffffff);
 
 // ── Camera ─────────────────────────────────────────────────────────────────
-// View from slightly in front and above the ring plane so it reads as 3D.
-const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
-camera.position.set(0, -4.0, 2.5);
+// GlowScript default: camera on +z axis looking toward origin (ring in xy-plane
+// appears as a circle). FOV 55° ≈ GlowScript's ~60° default, distance 3 fits
+// the 3×3 plane with a small margin (same proportions as the original).
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100);
+camera.position.set(0, 0, 3.0);
 camera.lookAt(0, 0, 0);
 
 // ── Renderer ───────────────────────────────────────────────────────────────
@@ -86,22 +88,14 @@ const ringMat = new THREE.MeshBasicMaterial({ color: 0x2255bb }); // placeholder
 const ringMesh = new THREE.Mesh(ringGeo, ringMat);
 scene.add(ringMesh);
 
-// Load earth texture — GlowScript's own URL first, NASA Blue Marble as fallback.
+// Load earth texture — same file GlowScript uses (earth_texture.jpg from S3),
+// served same-origin to avoid CORS issues.
 const loader = new THREE.TextureLoader();
-function applyTex(tex) {
+loader.load('earth_texture.jpg', tex => {
   ringMat.map = tex;
   ringMat.color.set(0xffffff);
   ringMat.needsUpdate = true;
-}
-loader.load(
-  'https://web.glowscript.org/textures/earth_large.jpg',
-  applyTex,
-  undefined,
-  () => loader.load(
-    'https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Land_ocean_ice_cloud_hires.jpg/2048px-Land_ocean_ice_cloud_hires.jpg',
-    applyTex
-  )
-);
+});
 
 // ── Semi-transparent red plane ─────────────────────────────────────────────
 // GlowScript: box(3×3×0.01, color=red, opacity=0.2) — visually a flat plane
